@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice Payments on Aevum Testnet — Demo</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
+  .card { border: 1px solid #8884; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
+  label { display: block; font-size: .85rem; margin: .6rem 0 .2rem; opacity: .85; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem; border-radius: 6px; border: 1px solid #8886; background: transparent; color: inherit; }
+  button { padding: .55rem 1rem; border-radius: 6px; border: 0; background: #4f46e5; color: #fff; cursor: pointer; margin-top: .8rem; }
+  button.secondary { background: #57534e; } button.danger { background: #b91c1c; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: end; } .row > div { flex: 1; min-width: 180px; }
+  .badge { padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; color: #fff; }
+  .Pending { background: #d97706; } .Paid { background: #16a34a; } .Cancelled { background: #6b7280; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .8rem; max-height: 220px; overflow: auto; }
+  .warn { background: #b4530922; border: 1px solid #b45309; padding: .6rem .8rem; border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; } td, th { padding: .35rem .4rem; border-bottom: 1px solid #8883; text-align: left; }
+  .mono { font-family: ui-monospace, monospace; font-size: .85em; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Invoice Payments — Aevum Testnet demo</h1>
+<p>Create an invoice, let the payer settle it in <b>tUSD8</b>, and track its status on-chain.
+   Network: Aevum Testnet (chain id 44005). Settlement token:
+   <span class="mono">0x456569838f1d43009A91ebA4263147Afd7233483</span></p>
+
+<div id="deploy-warning" class="warn" hidden>
+  ⚠️ <b>Demo not live yet:</b> <span class="mono">INVOICE_CONTRACT_ADDRESS</span> in this page is still a
+  placeholder. It will be filled in after the contract is deployed to Aevum Testnet (see README → Deployment).
+</div>
+
+<div class="card">
+  <button id="connect">Connect wallet</button>
+  <span id="account" class="mono"></span>
+  <div id="log"></div>
+</div>
+
+<div class="card">
+  <h2>Create invoice (as issuer)</h2>
+  <div class="row">
+    <div><label>Payer address</label><input id="ci-payer" placeholder="0x…"></div>
+    <div><label>Amount (tUSD8)</label><input id="ci-amount" type="number" min="0" step="0.000001" placeholder="250.00"></div>
+  </div>
+  <div class="row">
+    <div><label>Due date</label><input id="ci-due" type="datetime-local"></div>
+    <div><label>Memo / reference</label><input id="ci-memo" placeholder="INV-001 — design work"></div>
+  </div>
+  <button id="create">Create invoice</button>
+</div>
+
+<div class="card">
+  <h2>Look up / pay / cancel an invoice</h2>
+  <div class="row">
+    <div><label>Invoice id</label><input id="lk-id" type="number" min="1" step="1" placeholder="1"></div>
+  </div>
+  <button id="lookup" class="secondary">Look up</button>
+  <button id="pay">Approve &amp; pay (as payer)</button>
+  <button id="cancel" class="danger">Cancel (as issuer)</button>
+  <div id="invoice-view" style="margin-top:1rem"></div>
+</div>
+
+<div class="card">
+  <h2>Recent invoices</h2>
+  <button id="refresh" class="secondary">Refresh list</button>
+  <table><thead><tr><th>Id</th><th>Issuer</th><th>Payer</th><th>Amount</th><th>Due</th><th>Status</th><th>Memo</th></tr></thead>
+  <tbody id="recent"></tbody></table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+"use strict";
+/* ================= CONFIG — edit after deployment ================= */
+const CONFIG = {
+  chainId: 44005,
+  chainName: "Aevum Testnet",
+  rpcUrl: "https://rpc-test.qday.info",
+  explorerUrl: "https://explorer-test.qday.info",
+  nativeSymbol: "tQDAY",
+  tusd8: "0x456569838f1d43009A91ebA4263147Afd7233483",
+  // TODO(deployment): replace with the deployed InvoicePayments address.
+  invoiceContract: "0x0000000000000000000000000000000000000000",
+};
+/* ================================================================== */
+
+const INVOICE_ABI = [
+  "function createInvoice(address payer, uint256 amount, uint64 dueDate, string memo) returns (uint256)",
+  "function payInvoice(uint256 id)",
+  "function cancelInvoice(uint256 id)",
+  "function getInvoice(uint256 id) view returns (tuple(address issuer, address payer, uint256 amount, uint64 dueDate, uint8 status, string memo))",
+  "function invoiceCount() view returns (uint256)",
+  "event InvoiceCreated(uint256 indexed id, address indexed issuer, address indexed payer, uint256 amount, uint64 dueDate, string memo)",
+  "event InvoicePaid(uint256 indexed id, address indexed payer, uint256 amount, bool late)",
+  "event InvoiceCancelled(uint256 indexed id, address indexed issuer)",
+];
+const ERC20_ABI = [
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function balanceOf(address account) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+];
+const STATUS = ["Pending", "Paid", "Cancelled"];
+const ZERO = "0x0000000000000000000000000000000000000000";
+
+let provider, signer, account, invoices, tusd8;
+
+const $ = (id) => document.getElementById(id);
+function log(msg) { $("log").textContent += msg + "\n"; }
+function txLink(hash) { return CONFIG.explorerUrl + "/tx/" + hash; }
+function short(a) { return a.slice(0, 6) + "…" + a.slice(-4); }
+
+if (CONFIG.invoiceContract === ZERO) $("deploy-warning").hidden = false;
+
+async function ensureChain() {
+  const target = "0x" + CONFIG.chainId.toString(16);
+  const current = await window.ethereum.request({ method: "eth_chainId" });
+  if (current === target) return;
+  try {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: target }] });
+  } catch (e) {
+    if (e.code === 4902 || /unrecognized|not added/i.test(e.message || "")) {
+      await window.ethereum.request({
+        method: "wallet_addEthereumChain",
+        params: [{
+          chainId: target, chainName: CONFIG.chainName, rpcUrls: [CONFIG.rpcUrl],
+          blockExplorerUrls: [CONFIG.explorerUrl],
+          nativeCurrency: { name: CONFIG.nativeSymbol, symbol: CONFIG.nativeSymbol, decimals: 18 },
+        }],
+      });
+    } else { throw e; }
+  }
+}
+
+async function connect() {
+  if (!window.ethereum) { alert("No wallet found. Install MetaMask or another injected wallet."); return; }
+  await ensureChain();
+  provider = new ethers.BrowserProvider(window.ethereum);
+  signer = await provider.getSigner();
+  account = await signer.getAddress();
+  invoices = new ethers.Contract(CONFIG.invoiceContract, INVOICE_ABI, signer);
+  tusd8 = new ethers.Contract(CONFIG.tusd8, ERC20_ABI, signer);
+  $("account").textContent = "connected: " + account;
+  const bal = await tusd8.balanceOf(account);
+  log("Connected " + account + " — tUSD8 balance: " + ethers.formatUnits(bal, 6));
+  refreshRecent();
+}
+
+function requireContract() {
+  if (CONFIG.invoiceContract === ZERO) { alert("Contract not deployed yet — see the deployment warning above."); throw new Error("not deployed"); }
+}
+
+async function sendTx(label, txPromise) {
+  const tx = await txPromise;
+  log(label + " sent: " + tx.hash + " (" + txLink(tx.hash) + ")");
+  await tx.wait();
+  log(label + " confirmed.");
+  return tx;
+}
+
+$("connect").onclick = () => connect().catch((e) => log("Error: " + (e.shortMessage || e.message)));
+
+$("create").onclick = async () => {
+  try {
+    requireContract();
+    if (!signer) await connect();
+    const payer = $("ci-payer").value.trim();
+    const amount = ethers.parseUnits($("ci-amount").value || "0", 6);
+    const due = Math.floor(new Date($("ci-due").value).getTime() / 1000);
+    const memo = $("ci-memo").value;
+    if (!ethers.isAddress(payer)) throw new Error("Invalid payer address");
+    if (amount <= 0n) throw new Error("Amount must be > 0");
+    if (!due || due <= Math.floor(Date.now() / 1000)) throw new Error("Due date must be in the future");
+    const before = await invoices.invoiceCount();
+    await sendTx("Create invoice", invoices.createInvoice(payer, amount, due, memo));
+    const id = (await invoices.invoiceCount()) > before ? await invoices.invoiceCount() : before + 1n;
+    log("Invoice created with id " + id.toString());
+    $("lk-id").value = id.toString();
+    lookup();
+    refreshRecent();
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+};
+
+async function fetchInvoice(id) {
+  requireContract();
+  if (!provider) { provider = new ethers.JsonRpcProvider(CONFIG.rpcUrl); invoices = new ethers.Contract(CONFIG.invoiceContract, INVOICE_ABI, provider); }
+  return invoices.getInvoice(id);
+}
+
+async function lookup() {
+  try {
+    const id = BigInt($("lk-id").value || "0");
+    const inv = await fetchInvoice(id);
+    $("invoice-view").innerHTML =
+      "<table>" +
+      "<tr><td>Issuer</td><td class='mono'>" + inv.issuer + "</td></tr>" +
+      "<tr><td>Payer</td><td class='mono'>" + inv.payer + "</td></tr>" +
+      "<tr><td>Amount</td><td>" + ethers.formatUnits(inv.amount, 6) + " tUSD8</td></tr>" +
+      "<tr><td>Due</td><td>" + new Date(Number(inv.dueDate) * 1000).toLocaleString() + "</td></tr>" +
+      "<tr><td>Status</td><td><span class='badge " + STATUS[Number(inv.status)] + "'>" + STATUS[Number(inv.status)] + "</span></td></tr>" +
+      "<tr><td>Memo</td><td>" + inv.memo.replace(/</g, "&lt;") + "</td></tr></table>";
+    return inv;
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+}
+$("lookup").onclick = lookup;
+
+$("pay").onclick = async () => {
+  try {
+    requireContract();
+    if (!signer) await connect();
+    const id = BigInt($("lk-id").value || "0");
+    const inv = await invoices.getInvoice(id);
+    if (Number(inv.status) !== 0) throw new Error("Invoice is not pending");
+    if (inv.payer.toLowerCase() !== account.toLowerCase()) throw new Error("Connected account is not the payer");
+    const allowed = await tusd8.allowance(account, CONFIG.invoiceContract);
+    if (allowed < inv.amount) {
+      await sendTx("Approve tUSD8", tusd8.approve(CONFIG.invoiceContract, inv.amount));
+    }
+    await sendTx("Pay invoice", invoices.payInvoice(id));
+    lookup(); refreshRecent();
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+};
+
+$("cancel").onclick = async () => {
+  try {
+    requireContract();
+    if (!signer) await connect();
+    const id = BigInt($("lk-id").value || "0");
+    await sendTx("Cancel invoice", invoices.cancelInvoice(id));
+    lookup(); refreshRecent();
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+};
+
+async function refreshRecent() {
+  try {
+    requireContract();
+    if (!provider) { provider = new ethers.JsonRpcProvider(CONFIG.rpcUrl); invoices = new ethers.Contract(CONFIG.invoiceContract, INVOICE_ABI, provider); }
+    const count = Number(await invoices.invoiceCount());
+    const rows = [];
+    for (let id = count; id >= Math.max(1, count - 9); id--) {
+      const inv = await invoices.getInvoice(id);
+      rows.push("<tr><td>" + id + "</td><td class='mono'>" + short(inv.issuer) + "</td><td class='mono'>" + short(inv.payer) +
+        "</td><td>" + ethers.formatUnits(inv.amount, 6) + "</td><td>" + new Date(Number(inv.dueDate) * 1000).toLocaleDateString() +
+        "</td><td><span class='badge " + STATUS[Number(inv.status)] + "'>" + STATUS[Number(inv.status)] + "</span></td><td>" +
+        inv.memo.replace(/</g, "&lt;") + "</td></tr>");
+    }
+    $("recent").innerHTML = rows.join("") || "<tr><td colspan='7'>No invoices yet.</td></tr>";
+  } catch (e) { log("Error: " + (e.shortMessage || e.message)); }
+}
+$("refresh").onclick = refreshRecent;
+
+// Default the due-date field to +7 days.
+$("ci-due").value = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 16);
+</script>
+</body>
+</html>
