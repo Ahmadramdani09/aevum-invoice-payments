@@ -104,7 +104,7 @@ Demo UI (demo/index.html, static) ── window.ethereum / ethers.js ──▶ c
 | Explorer            | https://explorer-test.qday.info             |
 | Settlement token    | tUSD8 (ERC-20, 6 decimals)                  |
 | tUSD8 address       | `0x456569838f1d43009A91ebA4263147Afd7233483` |
-| InvoicePayments     | *pending deployment — see below*            |
+| InvoicePayments     | [`0x82DaE75c99BbAA2DD15066D3D561576Dd0EAE90a`](https://explorer-test.qday.info/address/0x82DaE75c99BbAA2DD15066D3D561576Dd0EAE90a) |
 | Deployer (testnet)  | `0x67223a889319A76C38DF7c78B3888E7d9FF08aA5` |
 
 ## Run the tests
@@ -130,29 +130,40 @@ python3 -m http.server --directory demo 8000
 # → http://localhost:8000
 ```
 
-The page adds/switches to Aevum Testnet automatically on connect. Until the
-contract is deployed it shows a "not live yet" warning; after deployment,
-set `CONFIG.invoiceContract` in `demo/index.html` to the deployed address.
+The page adds/switches to Aevum Testnet automatically on connect.
+`CONFIG.invoiceContract` in `demo/index.html` points at the live deployment
+below; the page only shows its "not live yet" warning if that address is
+ever reset to the zero address.
 
-## Deployment (pending)
+## Deployment (done — 23 Nov 2026)
 
-The contract, tests, and demo are complete; deployment is a short final
-step that needs testnet gas in the deployer wallet:
+Deployed to Aevum Testnet and verified by reading state back on-chain:
 
-1. **Fund the deployer** — claim tQDAY from the Aevum testnet faucet to
-   `0x67223a889319A76C38DF7c78B3888E7d9FF08aA5` (deployer key lives in
-   `.keys/deployer.key`, gitignored, never shared).
-2. **Deploy:**
-   ```bash
-   forge script script/Deploy.s.sol:Deploy \
-     --rpc-url aevum_testnet --broadcast \
-     --private-key $(cat .keys/deployer.key)
-   ```
-3. **Verify** — read state back (`cast call <address> "invoiceCount()"`)
-   and check the contract on https://explorer-test.qday.info.
-4. **Go live** — fill the deployed address into the table above and into
-   `CONFIG.invoiceContract` in `demo/index.html`, then publish the demo
-   (e.g. GitHub Pages from the `demo/` folder).
+| Item | Value |
+| --- | --- |
+| Contract | `0x82DaE75c99BbAA2DD15066D3D561576Dd0EAE90a` |
+| Deploy tx | [`0x38dba105ea55635798384cfd98ff694555ac2d25a75f633be6bbcf91e85d991d`](https://explorer-test.qday.info/tx/0x38dba105ea55635798384cfd98ff694555ac2d25a75f633be6bbcf91e85d991d) |
+| Block | 3918531 |
+| Gas used | 712,307 (≈0.000784 tQDAY at ~1.1 Gwei) |
+| Deployer | `0x67223a889319A76C38DF7c78B3888E7d9FF08aA5` (funded with 0.001 tQDAY from a public faucet) |
+| Read-back check | `token()` on the deployed contract returns the tUSD8 address `0x456569838f1d43009A91ebA4263147Afd7233483` |
+
+How it was deployed: the public RPC endpoint was unreachable from the
+build environment, so the signed deployment transaction was broadcast
+through the explorer's JSON-RPC relay (`/api/eth-rpc`). The equivalent
+one-command route on a normal network is:
+
+```bash
+forge script script/Deploy.s.sol:Deploy \
+  --rpc-url aevum_testnet --broadcast \
+  --private-key $(cat .keys/deployer.key)
+```
+
+(deployer key lives in `.keys/deployer.key`, gitignored, never shared).
+
+Remaining for a full end-to-end demo run: the demo wallet needs some
+tUSD8 (testnet token) to settle an invoice — obtainable from the QDay
+community faucet channels.
 
 ## Tech stack
 
